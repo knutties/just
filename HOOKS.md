@@ -226,3 +226,47 @@ ci-upload-results:
 ```
 
 This keeps the main justfile clean while allowing CI-specific behavior to be layered on top.
+
+## Hooks as a CI/CD Replacement: Capability Assessment
+
+Hooks combined with existing `just` features can replace a significant portion of what CI/CD workflow files (e.g., GitHub Actions YAML) provide. This section assesses which CI capabilities hooks can cover today, which could be covered with configurable hook settings, and which fundamentally require an external platform.
+
+### Already Supported by Hooks + Just
+
+| Capability | How |
+|---|---|
+| **Step ordering** | `[before]` / `[after]` hooks around recipes |
+| **Setup / teardown** | Before hooks for setup, after hooks for cleanup |
+| **Conditional execution** | Shell conditionals in hooks (e.g., `test -n "$CI"`) |
+| **Notifications / status reporting** | After hooks calling webhooks, APIs, etc. |
+| **Artifact collection** | After hooks copying files to `$CI_ARTIFACTS_DIR` |
+| **Job-level parallelism** | `just`'s native recipe dependencies with `--parallel` — hooks fire per-recipe, so each parallel branch gets its own before/after hooks |
+| **DAG-like dependency graphs** | `just`'s dependency system already models this; hooks layer on top |
+| **Separation of concerns** | `import` to layer CI hooks over a clean base justfile |
+
+### Addressable with Configurable Hook Settings
+
+These capabilities don't exist today but could be added as declarative settings on hooks without requiring an external CI platform:
+
+| Capability | Possible Setting | How It Would Work |
+|---|---|---|
+| **Matrix builds** | `matrix = { os = ["linux", "macos"], rust = ["stable", "nightly"] }` | Hook runner expands into multiple invocations with env vars like `$HOOK_MATRIX_OS`, `$HOOK_MATRIX_RUST` |
+| **Simple triggers** | `triggers = ["file-change", "schedule"]` | Local daemon, file watcher, or cron invokes recipes. A `schedule = "0 */6 * * *"` setting is just cron |
+| **Secrets injection** | `secrets = ["AWS_KEY", "DB_PASS"]` | Hook runner pulls from a local secrets store (e.g., `pass`, 1Password CLI, HashiCorp Vault) and injects into the environment |
+| **Service containers** | `services = { postgres = { image = "postgres:15", port = 5432 } }` | Hook runner starts/stops Docker sidecars around the recipe |
+| **Declarative conditions** | `when = "branch == main"` or `when = "$CI == true"` | Makes hook activation declarative instead of requiring shell `if` blocks |
+| **Runner specification** | `runner = { os = "linux", arch = "x86_64", tools = ["rust:1.75", "node:20"] }` | Declares the required environment — locally, validates or uses `docker`/`nix-shell`/`devcontainer` to satisfy it; in CI, the platform maps it to its runner pool. Follows the same convention-based approach as `$CI=true`, `.node-version`, `.tool-versions` (asdf), and `rust-toolchain.toml` |
+
+### Remaining Gaps: Requires an External Platform
+
+These capabilities are inherently platform-level concerns that cannot be replicated by a build tool, no matter how configurable:
+
+| Capability | Why It Needs a Platform |
+|---|---|
+| **Runner provisioning** | Someone must **be** the machine. Declaring `runner: { os: macos, arch: arm64 }` is standardizable, but actually provisioning that machine requires an orchestrator with a pool of runners |
+| **Platform identity (OIDC / token scoping)** | Keyless cloud authentication (e.g., `permissions: id-token: write` for AWS/GCP federation) requires the CI platform to **be** the identity provider. No local config can replicate this |
+| **Cross-run persistence** | Caching and artifact storage across ephemeral CI runs (e.g., `actions/cache`, `actions/upload-artifact`) require a persistence layer that outlives any single build. Locally your filesystem already serves this purpose, but ephemeral CI runners need platform-managed storage |
+
+### Summary
+
+The vast majority of CI/CD workflow logic — step orchestration, parallelism, dependency graphs, setup/teardown, notifications, and conditional execution — is already expressible through hooks and native `just` features. With configurable hook settings (matrix expansion, triggers, secrets, services, runner specs), the surface area that **must** live in platform-specific workflow files shrinks to just three concerns: runner provisioning, platform identity, and cross-run persistence.
