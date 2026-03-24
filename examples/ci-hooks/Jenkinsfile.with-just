@@ -1,0 +1,35 @@
+// =============================================================================
+// AFTER: Jenkinsfile using just + hooks
+//
+// All CI plumbing is handled by .ci/hooks.just. Jenkins just calls recipes.
+// =============================================================================
+
+pipeline {
+    agent any
+
+    environment {
+        CI = 'true'
+        CI_ARTIFACTS_DIR = "${WORKSPACE}/artifacts"
+    }
+
+    stages {
+        stage('Build') {
+            steps { sh 'just build' }
+        }
+        stage('Test') {
+            steps { sh 'just test' }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'artifacts/**', allowEmptyArchive: true
+                }
+            }
+        }
+        stage('Lint') {
+            steps { sh 'just lint' }
+        }
+        stage('Deploy') {
+            when { branch 'main' }
+            steps { sh 'just --yes deploy production' }
+        }
+    }
+}

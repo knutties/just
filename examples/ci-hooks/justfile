@@ -1,0 +1,48 @@
+# =============================================================================
+# Project justfile — owned by the application developer
+#
+# This file knows nothing about CI. It describes how to build, test, lint,
+# and deploy the project. CI-specific hooks live in .ci/hooks.just and are
+# pulled in via the import below.
+# =============================================================================
+
+import '.ci/hooks.just'
+
+# --- Settings ----------------------------------------------------------------
+
+set dotenv-load
+
+project   := "myapp"
+version   := `git describe --tags --always 2>/dev/null || echo "dev"`
+
+# --- Recipes -----------------------------------------------------------------
+
+# Compile the project
+[group("build")]
+build:
+    @echo "Building {{project}} {{version}} ..."
+    cargo build --release
+
+# Run the full test suite
+[group("test")]
+test: build
+    @echo "Running tests ..."
+    cargo test --release -- --test-threads=4
+
+# Run clippy and format checks
+[group("lint")]
+lint:
+    cargo clippy --all-targets -- -D warnings
+    cargo fmt -- --check
+
+# Deploy to the given target environment
+[group("deploy")]
+[confirm("Deploy {{project}} {{version}} to {{target}}?")]
+deploy target:
+    @echo "Deploying {{project}} {{version}} to {{target}} ..."
+    ./scripts/deploy.sh {{target}} {{version}}
+
+# Generate documentation
+[group("docs")]
+docs:
+    cargo doc --no-deps --document-private-items
