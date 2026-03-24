@@ -239,8 +239,7 @@ impl<'run, 'src> Analyzer<'run, 'src> {
     for recipe in recipes.values() {
       for attribute in &recipe.attributes {
         let target_name = match attribute {
-          Attribute::Before(lit) => Some(&lit.cooked),
-          Attribute::After(lit) => Some(&lit.cooked),
+          Attribute::Before(lit) | Attribute::After(lit) => Some(&lit.cooked),
           _ => None,
         };
         if let Some(target_name) = target_name {

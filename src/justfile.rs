@@ -342,10 +342,8 @@ impl<'src> Justfile<'src> {
       .filter(|recipe| {
         recipe.attributes.iter().any(|attr| {
           match (discriminant, attr) {
-            (AttributeDiscriminant::Before, Attribute::Before(lit)) => {
-              lit.cooked == target_name
-            }
-            (AttributeDiscriminant::After, Attribute::After(lit)) => {
+            (AttributeDiscriminant::Before, Attribute::Before(lit))
+            | (AttributeDiscriminant::After, Attribute::After(lit)) => {
               lit.cooked == target_name
             }
             _ => false,

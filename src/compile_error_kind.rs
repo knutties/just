@@ -173,10 +173,6 @@ pub(crate) enum CompileErrorKind<'src> {
     alias: &'src str,
     target: Namepath<'src>,
   },
-  UnknownHookTarget {
-    hook: &'src str,
-    target: String,
-  },
   UnknownAttribute {
     attribute: &'src str,
   },
@@ -190,6 +186,10 @@ pub(crate) enum CompileErrorKind<'src> {
   },
   UnknownFunction {
     function: &'src str,
+  },
+  UnknownHookTarget {
+    hook: &'src str,
+    target: String,
   },
   UnknownSetting {
     setting: &'src str,

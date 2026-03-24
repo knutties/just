@@ -277,7 +277,6 @@ impl Display for Attribute<'_> {
     write!(f, "{}", self.name())?;
 
     match self {
-      Self::After(argument) | Self::Before(argument) => write!(f, "({argument})")?,
       Self::Arg {
         help,
         long,
@@ -330,7 +329,9 @@ impl Display for Attribute<'_> {
       | Self::Script(None)
       | Self::Unix
       | Self::Windows => {}
-      Self::Confirm(Some(argument))
+      Self::After(argument)
+      | Self::Before(argument)
+      | Self::Confirm(Some(argument))
       | Self::Doc(Some(argument))
       | Self::Extension(argument)
       | Self::Group(argument)
