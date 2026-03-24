@@ -332,6 +332,29 @@ impl<'src> Justfile<'src> {
     self.name.map(|name| name.lexeme()).unwrap_or_default()
   }
 
+  fn find_hooks<'a>(
+    recipes: &'a Table<'src, Arc<Recipe<'src>>>,
+    target_name: &str,
+    discriminant: AttributeDiscriminant,
+  ) -> Vec<&'a Arc<Recipe<'src>>> {
+    recipes
+      .values()
+      .filter(|recipe| {
+        recipe.attributes.iter().any(|attr| {
+          match (discriminant, attr) {
+            (AttributeDiscriminant::Before, Attribute::Before(lit)) => {
+              lit.cooked == target_name
+            }
+            (AttributeDiscriminant::After, Attribute::After(lit)) => {
+              lit.cooked == target_name
+            }
+            _ => false,
+          }
+        })
+      })
+      .collect()
+  }
+
   fn run_recipe(
     arguments: &[Vec<String>],
     config: &Config,
@@ -380,6 +403,24 @@ impl<'src> Justfile<'src> {
 
     let mut evaluator = Evaluator::new(&context, BTreeMap::new(), true, &scope);
 
+    // Run [before] hooks
+    if !config.no_hooks {
+      let before_hooks =
+        Self::find_hooks(&module.recipes, recipe.name(), AttributeDiscriminant::Before);
+      for hook_recipe in before_hooks {
+        Self::run_recipe(
+          &[],
+          config,
+          dotenv,
+          true,
+          ran,
+          hook_recipe,
+          scopes,
+          search,
+        )?;
+      }
+    }
+
     Self::run_dependencies(
       config,
       &context,
@@ -405,6 +446,24 @@ impl<'src> Justfile<'src> {
       scopes,
       search,
     )?;
+
+    // Run [after] hooks
+    if !config.no_hooks {
+      let after_hooks =
+        Self::find_hooks(&module.recipes, recipe.name(), AttributeDiscriminant::After);
+      for hook_recipe in after_hooks {
+        Self::run_recipe(
+          &[],
+          config,
+          dotenv,
+          true,
+          ran,
+          hook_recipe,
+          scopes,
+          search,
+        )?;
+      }
+    }
 
     *guard = true;
 

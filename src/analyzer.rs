@@ -235,6 +235,30 @@ impl<'run, 'src> Analyzer<'run, 'src> {
       deduplicated_recipes,
     )?;
 
+    // Validate [before] and [after] hook targets exist
+    for recipe in recipes.values() {
+      for attribute in &recipe.attributes {
+        let target_name = match attribute {
+          Attribute::Before(lit) => Some(&lit.cooked),
+          Attribute::After(lit) => Some(&lit.cooked),
+          _ => None,
+        };
+        if let Some(target_name) = target_name {
+          if !recipes.contains_key(target_name.as_str()) {
+            return Err(
+              recipe
+                .name
+                .error(CompileErrorKind::UnknownHookTarget {
+                  hook: recipe.name.lexeme(),
+                  target: target_name.clone(),
+                })
+                .into(),
+            );
+          }
+        }
+      }
+    }
+
     let mut aliases = Table::new();
     while let Some(alias) = self.aliases.pop() {
       aliases.insert(Self::resolve_alias(&self.modules, &recipes, alias)?);

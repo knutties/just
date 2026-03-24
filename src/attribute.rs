@@ -10,6 +10,7 @@ use super::*;
 #[strum_discriminants(derive(EnumString, Ord, PartialOrd))]
 #[strum_discriminants(strum(serialize_all = "kebab-case"))]
 pub(crate) enum Attribute<'src> {
+  After(StringLiteral<'src>),
   Arg {
     help: Option<StringLiteral<'src>>,
     long: Option<StringLiteral<'src>>,
@@ -20,6 +21,7 @@ pub(crate) enum Attribute<'src> {
     short: Option<StringLiteral<'src>>,
     value: Option<StringLiteral<'src>>,
   },
+  Before(StringLiteral<'src>),
   Confirm(Option<StringLiteral<'src>>),
   Default,
   Doc(Option<StringLiteral<'src>>),
@@ -67,7 +69,7 @@ impl AttributeDiscriminant {
       | Self::Windows => 0..=0,
       Self::Confirm | Self::Doc => 0..=1,
       Self::Script => 0..=usize::MAX,
-      Self::Arg | Self::Extension | Self::Group | Self::WorkingDirectory => 1..=1,
+      Self::After | Self::Arg | Self::Before | Self::Extension | Self::Group | Self::WorkingDirectory => 1..=1,
       Self::Env => 2..=2,
       Self::Metadata => 1..=usize::MAX,
     }
@@ -126,6 +128,7 @@ impl<'src> Attribute<'src> {
     }
 
     let attribute = match discriminant {
+      AttributeDiscriminant::After => Self::After(arguments.into_iter().next().unwrap()),
       AttributeDiscriminant::Arg => {
         let arg = arguments.into_iter().next().unwrap();
 
@@ -184,6 +187,7 @@ impl<'src> Attribute<'src> {
           value,
         }
       }
+      AttributeDiscriminant::Before => Self::Before(arguments.into_iter().next().unwrap()),
       AttributeDiscriminant::Confirm => Self::Confirm(arguments.into_iter().next()),
       AttributeDiscriminant::Default => Self::Default,
       AttributeDiscriminant::Doc => Self::Doc(arguments.into_iter().next()),
@@ -258,7 +262,12 @@ impl<'src> Attribute<'src> {
   pub(crate) fn repeatable(&self) -> bool {
     matches!(
       self,
-      Attribute::Arg { .. } | Attribute::Env(_, _) | Attribute::Group(_) | Attribute::Metadata(_),
+      Attribute::After(_)
+        | Attribute::Arg { .. }
+        | Attribute::Before(_)
+        | Attribute::Env(_, _)
+        | Attribute::Group(_)
+        | Attribute::Metadata(_),
     )
   }
 }
@@ -268,6 +277,7 @@ impl Display for Attribute<'_> {
     write!(f, "{}", self.name())?;
 
     match self {
+      Self::After(argument) | Self::Before(argument) => write!(f, "({argument})")?,
       Self::Arg {
         help,
         long,

@@ -198,6 +198,12 @@ pub struct Arguments {
     long = "no-deps"
   )]
   pub(crate) no_deps: bool,
+  #[arg(
+    env = "JUST_NO_HOOKS",
+    help = "Don't run recipe hooks ([before] and [after] recipes)",
+    long = "no-hooks"
+  )]
+  pub(crate) no_hooks: bool,
   #[arg(env = "JUST_NO_DOTENV", help = "Don't load `.env` file", long)]
   pub(crate) no_dotenv: bool,
   #[arg(

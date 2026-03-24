@@ -83,6 +83,7 @@ mod functions;
 mod global;
 mod groups;
 mod guards;
+mod hooks;
 mod ignore_comments;
 mod imports;
 mod init;
