@@ -12,6 +12,7 @@ Hooks allow recipes to automatically run before or after a target recipe, withou
 - [Interaction with Dependencies](#interaction-with-dependencies)
 - [Skipping Hooks](#skipping-hooks)
 - [Compile-Time Validation](#compile-time-validation)
+- [Hook Context Variables](#hook-context-variables)
 - [Use Case: CI/CD Pipelines](#use-case-cicd-pipelines)
 - [Hooks as a CI/CD Replacement: Capability Assessment](#hooks-as-a-cicd-replacement-capability-assessment)
 - [Comparison with Nix](#comparison-with-nix)
@@ -204,6 +205,62 @@ Hook targets are validated at parse time. If a `[before]` or `[after]` attribute
 
 ```
 error: Hook recipe `setup` targets unknown recipe `nonexistent`
+```
+
+## Hook Context Variables
+
+When a hook recipe runs, `just` sets environment variables that provide information about the target recipe. This allows hooks to adapt their behavior based on which recipe triggered them and, for after hooks, whether the target succeeded.
+
+### Variables Available to All Hooks
+
+| Variable | Description | Example |
+|---|---|---|
+| `JUST_HOOK_TARGET` | Name of the target recipe that triggered the hook | `deploy` |
+| `JUST_HOOK_TYPE` | Whether this is a `before` or `after` hook | `before` |
+
+### Additional Variables for After Hooks
+
+| Variable | Description | Example |
+|---|---|---|
+| `JUST_HOOK_STATUS` | Exit status of the target recipe (`0` for success) | `0` |
+
+### Why This Matters
+
+A single hook recipe can be attached to multiple targets:
+
+```just
+[before("build")]
+[before("test")]
+[before("deploy")]
+check:
+    echo "Running checks before $JUST_HOOK_TARGET"
+```
+
+Without `JUST_HOOK_TARGET`, the hook has no way to know which recipe triggered it. This is essential for logging, conditional logic, and status reporting.
+
+### Example: Status Reporting
+
+```just
+[after("build")]
+[after("test")]
+[after("deploy")]
+report-status:
+    curl -X POST "$WEBHOOK_URL" \
+      -d "{\"recipe\": \"$JUST_HOOK_TARGET\", \"status\": \"$JUST_HOOK_STATUS\"}"
+```
+
+### Direct Invocation
+
+When a hook recipe is run directly (e.g., `just check`), hook context variables are **not** set. The recipe runs as a normal recipe without any hook-specific environment. This allows hooks to detect whether they were triggered as a hook or invoked directly:
+
+```just
+[before("build")]
+setup:
+    if [ -n "$JUST_HOOK_TARGET" ]; then
+        echo "Running as hook for $JUST_HOOK_TARGET"
+    else
+        echo "Running directly"
+    fi
 ```
 
 ## Use Case: CI/CD Pipelines

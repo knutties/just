@@ -176,3 +176,79 @@ fn hooks_do_not_run_on_dependency_recipes() {
     .stdout("before-bar\nbar\nfoo\n")
     .success();
 }
+
+#[test]
+fn before_hook_receives_target_context() {
+  Test::new()
+    .justfile(
+      "
+        [before(\"build\")]
+        setup:
+          @echo \"target=$JUST_HOOK_TARGET type=$JUST_HOOK_TYPE\"
+
+        build:
+          @echo 'building'
+      ",
+    )
+    .args(["build"])
+    .stdout("target=build type=before\nbuilding\n")
+    .success();
+}
+
+#[test]
+fn after_hook_receives_target_context() {
+  Test::new()
+    .justfile(
+      "
+        [after(\"build\")]
+        cleanup:
+          @echo \"target=$JUST_HOOK_TARGET type=$JUST_HOOK_TYPE status=$JUST_HOOK_STATUS\"
+
+        build:
+          @echo 'building'
+      ",
+    )
+    .args(["build"])
+    .stdout("building\ntarget=build type=after status=0\n")
+    .success();
+}
+
+#[test]
+fn hook_context_not_set_for_direct_invocation() {
+  Test::new()
+    .justfile(
+      "
+        [before(\"build\")]
+        setup:
+          @echo \"target=${JUST_HOOK_TARGET:-unset}\"
+
+        build:
+          @echo 'building'
+      ",
+    )
+    .args(["setup"])
+    .stdout("target=unset\n")
+    .success();
+}
+
+#[test]
+fn hook_on_multiple_targets_receives_correct_context() {
+  Test::new()
+    .justfile(
+      "
+        [before(\"build\")]
+        [before(\"test\")]
+        check:
+          @echo \"before:$JUST_HOOK_TARGET\"
+
+        build:
+          @echo 'building'
+
+        test:
+          @echo 'testing'
+      ",
+    )
+    .args(["build"])
+    .stdout("before:build\nbuilding\n")
+    .success();
+}

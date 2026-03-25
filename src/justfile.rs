@@ -186,6 +186,7 @@ impl<'src> Justfile<'src> {
             invocation.recipe,
             &scopes,
             search,
+            None,
           )?;
         }
 
@@ -362,6 +363,7 @@ impl<'src> Justfile<'src> {
     recipe: &Recipe<'src>,
     scopes: &BTreeMap<Modulepath, (&Self, &Scope<'src, '_>)>,
     search: &Search,
+    hook_context: Option<&HookContext>,
   ) -> RunResult<'src> {
     let mutex = ran.mutex(recipe, arguments);
 
@@ -405,6 +407,7 @@ impl<'src> Justfile<'src> {
     if !config.no_hooks {
       let before_hooks =
         Self::find_hooks(&module.recipes, recipe.name(), AttributeDiscriminant::Before);
+      let before_ctx = HookContext::before(recipe.name());
       for hook_recipe in before_hooks {
         Self::run_recipe(
           &[],
@@ -415,6 +418,7 @@ impl<'src> Justfile<'src> {
           hook_recipe,
           scopes,
           search,
+          Some(&before_ctx),
         )?;
       }
     }
@@ -431,7 +435,7 @@ impl<'src> Justfile<'src> {
       search,
     )?;
 
-    recipe.run(&context, &scope, &positional, is_dependency)?;
+    recipe.run(&context, &scope, &positional, is_dependency, hook_context)?;
 
     Self::run_dependencies(
       config,
@@ -445,10 +449,11 @@ impl<'src> Justfile<'src> {
       search,
     )?;
 
-    // Run [after] hooks
+    // Run [after] hooks — target succeeded (status 0)
     if !config.no_hooks {
       let after_hooks =
         Self::find_hooks(&module.recipes, recipe.name(), AttributeDiscriminant::After);
+      let after_ctx = HookContext::after(recipe.name(), 0);
       for hook_recipe in after_hooks {
         Self::run_recipe(
           &[],
@@ -459,6 +464,7 @@ impl<'src> Justfile<'src> {
           hook_recipe,
           scopes,
           search,
+          Some(&after_ctx),
         )?;
       }
     }
@@ -502,7 +508,7 @@ impl<'src> Justfile<'src> {
         for (recipe, arguments) in evaluated {
           handles.push(thread_scope.spawn(move || {
             Self::run_recipe(
-              &arguments, config, dotenv, true, ran, recipe, scopes, search,
+              &arguments, config, dotenv, true, ran, recipe, scopes, search, None,
             )
           }));
         }
@@ -516,7 +522,7 @@ impl<'src> Justfile<'src> {
     } else {
       for (recipe, arguments) in evaluated {
         Self::run_recipe(
-          &arguments, config, dotenv, true, ran, recipe, scopes, search,
+          &arguments, config, dotenv, true, ran, recipe, scopes, search, None,
         )?;
       }
     }
