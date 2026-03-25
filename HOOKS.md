@@ -270,3 +270,73 @@ These capabilities are inherently platform-level concerns that cannot be replica
 ### Summary
 
 The vast majority of CI/CD workflow logic — step orchestration, parallelism, dependency graphs, setup/teardown, notifications, and conditional execution — is already expressible through hooks and native `just` features. With configurable hook settings (matrix expansion, triggers, secrets, services, runner specs), the surface area that **must** live in platform-specific workflow files shrinks to just three concerns: runner provisioning, platform identity, and cross-run persistence.
+
+## Comparison with Nix
+
+Justfile hooks and Nix solve different problems with fundamentally different philosophies. Understanding where each excels helps clarify why they are complementary rather than competitive.
+
+### Philosophy
+
+| | Justfile Hooks | Nix |
+|---|---|---|
+| **Core model** | Imperative shell commands with declarative ordering | Purely functional derivations — inputs → outputs |
+| **Hermeticity** | None — recipes see the full host environment | Strict — builds run in sandboxed environments with only declared inputs |
+| **Reproducibility** | Best-effort (depends on what's installed) | Guaranteed by design (content-addressed store) |
+| **Caching** | None built-in (your filesystem is the cache) | Automatic — if inputs haven't changed, the output is already in `/nix/store` |
+| **Composability** | `import` + `[before]`/`[after]` hooks layer behavior | Overlays, overrides, and flake inputs compose packages |
+
+### Strengths of Each Approach
+
+**Justfile hooks are better when you want:**
+- Low barrier to entry — a `justfile` is just shell commands with names
+- Transparent execution — you can read and predict exactly what runs
+- Incremental adoption — drop a `ci.just` into any project, no ecosystem buy-in
+- Human-oriented workflows — confirmations, notifications, status reporting
+- CI/CD glue — hooks model the "around the build" concerns (setup, teardown, notifications) that Nix doesn't address
+
+**Nix is better when you want:**
+- Reproducible environments — every developer and CI runner gets exactly the same toolchain
+- Hermetic builds — no "works on my machine" failures
+- Cross-project dependency management — Nix resolves the entire dependency graph (system libs, toolchains, services)
+- Content-addressed caching — rebuilds only what actually changed, across machines
+- Declarative environments — `nix develop` gives you a shell with all tools, no manual install steps
+
+### How They Express Build Ordering
+
+Both can express "run lint before build, run tests after build," but differently:
+
+- **Nix** does this via derivation dependencies in a DAG. The ordering is a *consequence* of data flow (build needs lint's output). It's implicit and enforced by the build graph.
+- **Justfile hooks** do this via explicit `[before]`/`[after]` annotations. The ordering is a *declaration* by the author. It's explicit and enforced by the runner.
+
+### Where They Don't Compete
+
+| Concern | Justfile Hooks | Nix |
+|---|---|---|
+| **Environment setup** | Shell commands (`apt install`, `brew install`) — fragile | `nix develop` — hermetic and reproducible |
+| **Build orchestration** | First-class (`[before]`/`[after]`, `--parallel`) | First-class (derivation DAG) |
+| **Notifications / webhooks** | Natural (after hooks calling `curl`) | Unnatural (Nix is about building, not side effects) |
+| **Secret injection** | Possible (env vars, proposed `secrets` setting) | Actively hostile (secrets break reproducibility) |
+| **CI layering** | `import 'ci.just'` — clean separation | Flake outputs per system — but CI logic lives elsewhere |
+
+### Using Them Together
+
+A realistic combined setup uses Nix for the hermetic environment and build, while hooks provide the orchestration, side effects, and CI glue that Nix intentionally doesn't handle:
+
+```just
+[before("build")]
+setup:
+    nix develop --command echo "Environment ready"
+
+build:
+    nix build .#default
+
+[after("build")]
+notify:
+    curl -X POST "$SLACK_WEBHOOK" -d '{"text": "Build complete"}'
+```
+
+### Key Tradeoff
+
+**Nix** trades simplicity for correctness — you get guarantees, but the learning curve is steep and the ecosystem is opinionated. **Justfile hooks** trade correctness for simplicity — you get something working in minutes, but you're responsible for ensuring your environment is consistent.
+
+The "Remaining Gaps" identified above (runner provisioning, identity, persistence) apply equally to both — neither Nix nor justfile hooks can *be* the CI platform. But Nix closes the "reproducible environment" gap that hooks leave open, while hooks close the "workflow orchestration" gap that Nix leaves open.
