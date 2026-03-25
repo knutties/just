@@ -2,6 +2,21 @@
 
 Hooks allow recipes to automatically run before or after a target recipe, without modifying the target recipe itself. This is especially useful for CI/CD pipelines (GitHub Actions, Jenkins, etc.) where setup and teardown logic needs to be injected around existing recipes.
 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Attributes](#attributes)
+- [Multiple Hooks](#multiple-hooks)
+- [A Single Hook for Multiple Targets](#a-single-hook-for-multiple-targets)
+- [Hook Recipes Are Regular Recipes](#hook-recipes-are-regular-recipes)
+- [Interaction with Dependencies](#interaction-with-dependencies)
+- [Skipping Hooks](#skipping-hooks)
+- [Compile-Time Validation](#compile-time-validation)
+- [Use Case: CI/CD Pipelines](#use-case-cicd-pipelines)
+- [Hooks as a CI/CD Replacement: Capability Assessment](#hooks-as-a-cicd-replacement-capability-assessment)
+- [Comparison with Nix](#comparison-with-nix)
+- [Summary](#summary)
+
 ## Quick Start
 
 ```just
@@ -267,10 +282,6 @@ These capabilities are inherently platform-level concerns that cannot be replica
 | **Platform identity (OIDC / token scoping)** | Keyless cloud authentication (e.g., `permissions: id-token: write` for AWS/GCP federation) requires the CI platform to **be** the identity provider. No local config can replicate this |
 | **Cross-run persistence** | Caching and artifact storage across ephemeral CI runs (e.g., `actions/cache`, `actions/upload-artifact`) require a persistence layer that outlives any single build. Locally your filesystem already serves this purpose, but ephemeral CI runners need platform-managed storage |
 
-### Summary
-
-The vast majority of CI/CD workflow logic — step orchestration, parallelism, dependency graphs, setup/teardown, notifications, and conditional execution — is already expressible through hooks and native `just` features. With configurable hook settings (matrix expansion, triggers, secrets, services, runner specs), the surface area that **must** live in platform-specific workflow files shrinks to just three concerns: runner provisioning, platform identity, and cross-run persistence.
-
 ## Comparison with Nix
 
 Justfile hooks and Nix solve different problems with fundamentally different philosophies. Understanding where each excels helps clarify why they are complementary rather than competitive.
@@ -340,3 +351,9 @@ notify:
 **Nix** trades simplicity for correctness — you get guarantees, but the learning curve is steep and the ecosystem is opinionated. **Justfile hooks** trade correctness for simplicity — you get something working in minutes, but you're responsible for ensuring your environment is consistent.
 
 The "Remaining Gaps" identified above (runner provisioning, identity, persistence) apply equally to both — neither Nix nor justfile hooks can *be* the CI platform. But Nix closes the "reproducible environment" gap that hooks leave open, while hooks close the "workflow orchestration" gap that Nix leaves open.
+
+## Summary
+
+The vast majority of CI/CD workflow logic — step orchestration, parallelism, dependency graphs, setup/teardown, notifications, and conditional execution — is already expressible through hooks and native `just` features. With configurable hook settings (matrix expansion, triggers, secrets, services, runner specs), the surface area that **must** live in platform-specific workflow files shrinks to just three concerns: runner provisioning, platform identity, and cross-run persistence.
+
+Hooks and Nix are complementary rather than competitive. Nix provides hermetic, reproducible environments and builds; hooks provide workflow orchestration, side effects, and CI glue. Used together, they cover nearly the full spectrum of CI/CD needs, with only runner provisioning, platform identity, and cross-run persistence requiring an external platform.
