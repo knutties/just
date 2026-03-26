@@ -187,6 +187,10 @@ pub(crate) enum CompileErrorKind<'src> {
   UnknownFunction {
     function: &'src str,
   },
+  UnknownHookTarget {
+    hook: &'src str,
+    target: String,
+  },
   UnknownSetting {
     setting: &'src str,
   },

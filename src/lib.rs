@@ -44,6 +44,7 @@ pub(crate) use {
     format_string_part::FormatStringPart,
     fragment::Fragment,
     function::Function,
+    hook_context::HookContext,
     interpreter::Interpreter,
     invocation::Invocation,
     invocation_parser::InvocationParser,
@@ -230,6 +231,7 @@ mod filesystem;
 mod format_string_part;
 mod fragment;
 mod function;
+mod hook_context;
 mod interpreter;
 mod invocation;
 mod invocation_parser;

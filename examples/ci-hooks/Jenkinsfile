@@ -1,0 +1,87 @@
+// =============================================================================
+// BEFORE: Traditional Jenkinsfile
+//
+// This file is what the hooks example REPLACES. Kept here for comparison.
+// With justfile hooks, the entire pipeline below reduces to:
+//
+//   stage('Build') { sh 'just build' }
+//   stage('Test')  { sh 'just test'  }
+//   stage('Deploy'){ sh 'just deploy production' }
+//
+// =============================================================================
+
+pipeline {
+    agent any
+
+    environment {
+        CI = 'true'
+        CI_ARTIFACTS_DIR = "${WORKSPACE}/artifacts"
+    }
+
+    stages {
+        stage('Build') {
+            steps {
+                // CI plumbing: status
+                githubNotify context: 'build', status: 'PENDING', description: 'Build is running...'
+
+                sh 'cargo build --release'
+
+                // CI plumbing: status
+                githubNotify context: 'build', status: 'SUCCESS', description: 'Build passed'
+            }
+        }
+
+        stage('Test') {
+            steps {
+                githubNotify context: 'test', status: 'PENDING', description: 'Tests are running...'
+
+                sh 'cargo test --release -- --test-threads=4'
+
+                githubNotify context: 'test', status: 'SUCCESS', description: 'All tests passed'
+            }
+            post {
+                always {
+                    // CI plumbing: artifacts
+                    archiveArtifacts artifacts: 'target/test-results/**', allowEmptyArchive: true
+                    junit 'target/test-results/*.xml'
+                }
+            }
+        }
+
+        stage('Lint') {
+            steps {
+                githubNotify context: 'lint', status: 'PENDING'
+                sh 'cargo clippy --all-targets -- -D warnings'
+                sh 'cargo fmt -- --check'
+                githubNotify context: 'lint', status: 'SUCCESS'
+            }
+        }
+
+        stage('Deploy') {
+            when { branch 'main' }
+            steps {
+                // CI plumbing: pre-checks
+                script {
+                    ['DEPLOY_TOKEN', 'DEPLOY_HOST', 'SLACK_WEBHOOK_URL'].each { v ->
+                        if (!env."${v}") { error("Required variable ${v} is not set") }
+                    }
+                }
+
+                githubNotify context: 'deploy', status: 'PENDING'
+                sh './scripts/deploy.sh production'
+                githubNotify context: 'deploy', status: 'SUCCESS'
+
+                // CI plumbing: notification
+                slackSend channel: '#deploys',
+                    message: ":rocket: Deployed ${env.GIT_COMMIT?.take(7)}"
+            }
+        }
+    }
+
+    post {
+        failure {
+            slackSend channel: '#deploys', color: 'danger',
+                message: ":x: Pipeline failed for ${env.GIT_COMMIT?.take(7)}"
+        }
+    }
+}

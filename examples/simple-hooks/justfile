@@ -1,0 +1,11 @@
+[before("deploy")]
+lint:
+    cargo clippy
+
+[after("deploy")]
+notify:
+    echo "Deploy complete!"
+
+deploy:
+    cargo build --release
+

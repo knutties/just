@@ -217,6 +217,7 @@ impl<'src, D> Recipe<'src, D> {
     scope: &Scope<'src, 'run>,
     positional: &[String],
     is_dependency: bool,
+    hook_context: Option<&HookContext>,
   ) -> RunResult<'src> {
     let color = context.config.color.stderr().banner();
     let prefix = color.prefix();
@@ -235,9 +236,9 @@ impl<'src, D> Recipe<'src, D> {
     let evaluator = Evaluator::new(context, BTreeMap::new(), is_dependency, scope);
 
     if self.is_script() {
-      self.run_script(context, scope, positional, evaluator)
+      self.run_script(context, scope, positional, evaluator, hook_context)
     } else {
-      self.run_linewise(context, scope, positional, evaluator)
+      self.run_linewise(context, scope, positional, evaluator, hook_context)
     }
   }
 
@@ -247,6 +248,7 @@ impl<'src, D> Recipe<'src, D> {
     scope: &Scope<'src, 'run>,
     positional: &[String],
     mut evaluator: Evaluator<'src, 'run>,
+    hook_context: Option<&HookContext>,
   ) -> RunResult<'src> {
     let config = &context.config;
     let settings = &context.module.settings;
@@ -346,6 +348,10 @@ impl<'src, D> Recipe<'src, D> {
         }
       }
 
+      if let Some(hook_ctx) = hook_context {
+        hook_ctx.export(&mut cmd);
+      }
+
       cmd.export(settings, context.dotenv, scope, &context.module.unexports);
 
       let (result, caught) = cmd.status_guard();
@@ -403,6 +409,7 @@ impl<'src, D> Recipe<'src, D> {
     scope: &Scope<'src, 'run>,
     positional: &[String],
     mut evaluator: Evaluator<'src, 'run>,
+    hook_context: Option<&HookContext>,
   ) -> RunResult<'src> {
     let config = &context.config;
 
@@ -507,6 +514,10 @@ impl<'src, D> Recipe<'src, D> {
       if let Attribute::Env(key, value) = attribute {
         command.env(&key.cooked, &value.cooked);
       }
+    }
+
+    if let Some(hook_ctx) = hook_context {
+      hook_ctx.export(&mut command);
     }
 
     command.export(

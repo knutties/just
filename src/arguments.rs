@@ -208,6 +208,12 @@ pub struct Arguments {
   )]
   pub(crate) no_highlight: bool,
   #[arg(
+    env = "JUST_NO_HOOKS",
+    help = "Don't run recipe hooks ([before] and [after] recipes)",
+    long = "no-hooks"
+  )]
+  pub(crate) no_hooks: bool,
+  #[arg(
     env = "JUST_ONE",
     help = "Forbid multiple recipes from being invoked on the command line",
     long

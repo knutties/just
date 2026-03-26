@@ -347,6 +347,9 @@ impl Display for CompileError<'_> {
       UnknownAliasTarget { alias, target } => {
         write!(f, "Alias `{alias}` has an unknown target `{target}`")
       }
+      UnknownHookTarget { hook, target } => {
+        write!(f, "Hook recipe `{hook}` targets unknown recipe `{target}`")
+      }
       AttributeKeyMissingValue { key } => {
         write!(f, "Attribute key `{key}` requires value")
       }
