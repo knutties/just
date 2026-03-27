@@ -121,6 +121,10 @@ impl<'src> Justfile<'src> {
     arguments: &[String],
     overrides: &HashMap<Number, String>,
   ) -> RunResult<'src> {
+    live_event::emit(live_event::LiveEvent::RunStarted {
+      timestamp_ms: live_event::now_ms(),
+    });
+
     let dotenv = if config.load_dotenv {
       load_dotenv(config, &self.settings, &search.working_directory)?
     } else {

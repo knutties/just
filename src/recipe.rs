@@ -232,13 +232,37 @@ impl<'src, D> Recipe<'src, D> {
       }
     }
 
+    let recipe_name = self.name().to_string();
+    let start = std::time::Instant::now();
+
+    live_event::emit(live_event::LiveEvent::RecipeStarted {
+      name: recipe_name.clone(),
+      doc: self.doc().map(String::from),
+      is_dependency,
+      timestamp_ms: live_event::now_ms(),
+    });
+
     let evaluator = Evaluator::new(context, BTreeMap::new(), is_dependency, scope);
 
-    if self.is_script() {
+    let result = if self.is_script() {
       self.run_script(context, scope, positional, evaluator)
     } else {
       self.run_linewise(context, scope, positional, evaluator)
-    }
+    };
+
+    #[allow(clippy::cast_possible_truncation)]
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let success = result.is_ok();
+
+    live_event::emit(live_event::LiveEvent::RecipeCompleted {
+      name: recipe_name,
+      success,
+      error_message: result.as_ref().err().map(|e| format!("{e:?}")),
+      duration_ms,
+      timestamp_ms: live_event::now_ms(),
+    });
+
+    result
   }
 
   fn run_linewise<'run>(
@@ -322,6 +346,17 @@ impl<'src, D> Recipe<'src, D> {
         continue;
       }
 
+      let recipe_name = self.name().to_string();
+      let command_str = command.to_string();
+
+      live_event::emit(live_event::LiveEvent::RecipeLine {
+        recipe: recipe_name.clone(),
+        command: command_str.clone(),
+        timestamp_ms: live_event::now_ms(),
+      });
+
+      let line_start = std::time::Instant::now();
+
       let mut cmd = settings.shell_command(config);
 
       if let Some(working_directory) = self.working_directory(context) {
@@ -350,9 +385,24 @@ impl<'src, D> Recipe<'src, D> {
 
       let (result, caught) = cmd.status_guard();
 
+      #[allow(clippy::cast_possible_truncation)]
+      let line_duration_ms = line_start.elapsed().as_millis() as u64;
+
       match result {
         Ok(exit_status) => {
-          if let Some(code) = exit_status.code() {
+          let code = exit_status.code();
+          let success = code == Some(0) || infallible;
+
+          live_event::emit(live_event::LiveEvent::RecipeLineCompleted {
+            recipe: recipe_name,
+            command: command_str,
+            success,
+            code,
+            duration_ms: line_duration_ms,
+            timestamp_ms: live_event::now_ms(),
+          });
+
+          if let Some(code) = code {
             if code != 0 {
               if guard {
                 if code == 1 {
@@ -382,6 +432,15 @@ impl<'src, D> Recipe<'src, D> {
           }
         }
         Err(io_error) => {
+          live_event::emit(live_event::LiveEvent::RecipeLineCompleted {
+            recipe: recipe_name,
+            command: command_str,
+            success: false,
+            code: None,
+            duration_ms: line_duration_ms,
+            timestamp_ms: live_event::now_ms(),
+          });
+
           return Err(Error::Io {
             recipe: self.name(),
             io_error,
@@ -516,26 +575,60 @@ impl<'src, D> Recipe<'src, D> {
       &context.module.unexports,
     );
 
+    let recipe_name = self.name().to_string();
+
+    live_event::emit(live_event::LiveEvent::RecipeLine {
+      recipe: recipe_name.clone(),
+      command: format!("[script: {}]", self.name()),
+      timestamp_ms: live_event::now_ms(),
+    });
+
+    let script_start = std::time::Instant::now();
+
     // run it!
     let (result, caught) = command.status_guard();
 
+    #[allow(clippy::cast_possible_truncation)]
+    let script_duration_ms = script_start.elapsed().as_millis() as u64;
+
     match result {
-      Ok(exit_status) => exit_status.code().map_or_else(
-        || Err(error_from_signal(self.name(), None, exit_status)),
-        |code| {
-          if code == 0 {
-            Ok(())
-          } else {
-            Err(Error::Code {
+      Ok(exit_status) => {
+        let code = exit_status.code();
+        let success = code == Some(0);
+
+        live_event::emit(live_event::LiveEvent::RecipeLineCompleted {
+          recipe: recipe_name,
+          command: format!("[script: {}]", self.name()),
+          success,
+          code,
+          duration_ms: script_duration_ms,
+          timestamp_ms: live_event::now_ms(),
+        });
+
+        if let Some(code) = code {
+          if code != 0 {
+            return Err(Error::Code {
               recipe: self.name(),
               line_number: None,
               code,
               print_message: self.print_exit_message(&context.module.settings),
-            })
+            });
           }
-        },
-      )?,
-      Err(io_error) => return Err(executor.error(io_error, self.name())),
+        } else {
+          return Err(error_from_signal(self.name(), None, exit_status));
+        }
+      }
+      Err(io_error) => {
+        live_event::emit(live_event::LiveEvent::RecipeLineCompleted {
+          recipe: recipe_name,
+          command: format!("[script: {}]", self.name()),
+          success: false,
+          code: None,
+          duration_ms: script_duration_ms,
+          timestamp_ms: live_event::now_ms(),
+        });
+        return Err(executor.error(io_error, self.name()));
+      }
     }
 
     if let Some(signal) = caught {

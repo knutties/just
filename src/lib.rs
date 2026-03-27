@@ -238,6 +238,8 @@ mod justfile;
 mod keyed;
 mod keyword;
 mod lexer;
+mod live_event;
+mod live_server;
 mod line;
 mod list;
 mod load_dotenv;

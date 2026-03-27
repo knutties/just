@@ -18,9 +18,21 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
     .map(|config| (config.color, config.verbosity))
     .unwrap_or_default();
 
+  let live = config.as_ref().map(|c| c.live).unwrap_or(false);
+
+  let _live_port = if live {
+    let (tx, _rx) = tokio::sync::broadcast::channel(256);
+    live_event::set_sender(tx.clone());
+    let port = live_server::start(tx);
+    eprintln!("Live visualization at http://127.0.0.1:{port}");
+    Some(port)
+  } else {
+    None
+  };
+
   let loader = Loader::new();
 
-  config
+  let result = config
     .and_then(|config| {
       SignalHandler::install(config.verbosity)?;
       config.subcommand.execute(&config, &loader)
@@ -30,7 +42,29 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
         eprintln!("{}", error.color_display(color.stderr()));
       }
       error.code().unwrap_or(EXIT_FAILURE)
-    })
+    });
+
+  if live {
+    let success = result.is_ok();
+    live_event::emit(live_event::LiveEvent::RunCompleted {
+      success,
+      duration_ms: live_event::run_elapsed_ms(),
+      timestamp_ms: live_event::now_ms(),
+    });
+
+    if success {
+      eprintln!("Recipes complete. Visualization server still running. Press Ctrl+C to exit.");
+    } else {
+      eprintln!("Recipes failed. Visualization server still running. Press Ctrl+C to exit.");
+    }
+
+    // Keep the server alive so users can inspect the visualization
+    loop {
+      std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+  }
+
+  result
 }
 
 #[cfg(test)]

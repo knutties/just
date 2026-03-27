@@ -189,6 +189,12 @@ pub struct Arguments {
     requires = "list"
   )]
   pub(crate) list_submodules: bool,
+  #[arg(
+    env = "JUST_LIVE",
+    help = "Start a web server with a live visualization of recipe execution",
+    long
+  )]
+  pub(crate) live: bool,
   #[arg(env = "JUST_NO_ALIASES", help = "Don't show aliases in list", long)]
   pub(crate) no_aliases: bool,
   #[arg(

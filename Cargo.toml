@@ -50,6 +50,8 @@ target = "2.0.0"
 tempfile = "3.0.0"
 typed-arena = "2.0.1"
 unicode-width = "0.2.0"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+axum = { version = "0.7", features = ["ws"] }
 uuid = { version = "1.0.0", features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
