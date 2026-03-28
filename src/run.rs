@@ -23,6 +23,7 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
   if live {
     let (tx, _rx) = tokio::sync::broadcast::channel(256);
     live_event::set_sender(tx.clone());
+    live_event::set_command_line(std::env::args().collect::<Vec<_>>().join(" "));
 
     let project = std::env::current_dir()
       .ok()

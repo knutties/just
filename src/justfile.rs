@@ -147,6 +147,23 @@ impl<'src> Justfile<'src> {
           });
         }
 
+        if live_event::is_enabled() {
+          let dag = Self::collect_recipe_dag(
+            &invocations.iter().map(|i| i.recipe).collect::<Vec<_>>(),
+          );
+          let wd = search.working_directory.to_string_lossy().to_string();
+          let (git_branch, git_commit, git_dirty) = live_event::git_info(&search.working_directory);
+          live_event::emit(live_event::LiveEvent::SessionMetadata {
+            command_line: live_event::command_line(),
+            git_branch,
+            git_commit,
+            git_dirty,
+            recipes: dag,
+            timestamp_ms: live_event::now_ms(),
+            working_dir: wd,
+          });
+        }
+
         let variable_references = if self.settings.lazy {
           let mut variable_references = HashSet::new();
 
@@ -469,6 +486,37 @@ impl<'src> Justfile<'src> {
     }
 
     Ok(())
+  }
+
+  fn collect_recipe_dag(roots: &[&Recipe<'src>]) -> Vec<live_event::RecipeNode> {
+    let mut visited = HashSet::new();
+    let mut nodes = Vec::new();
+    let mut stack: Vec<&Recipe<'src>> = roots.to_vec();
+
+    while let Some(recipe) = stack.pop() {
+      let name = recipe.name().to_string();
+      if !visited.insert(name.clone()) {
+        continue;
+      }
+
+      let deps: Vec<String> = recipe
+        .dependencies
+        .iter()
+        .map(|d| d.recipe.name().to_string())
+        .collect();
+
+      for dep in &recipe.dependencies {
+        stack.push(&dep.recipe);
+      }
+
+      nodes.push(live_event::RecipeNode {
+        dependencies: deps,
+        doc: recipe.doc().map(String::from),
+        name,
+      });
+    }
+
+    nodes
   }
 
   pub(crate) fn public_modules(&self, config: &Config) -> Vec<&Justfile> {

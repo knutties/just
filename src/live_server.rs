@@ -398,7 +398,14 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
 
   .container {
     display: flex;
-    height: calc(100vh - 95px);
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .app-layout {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
   }
 
   .sidebar {
@@ -552,9 +559,81 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--bg-hover); border-radius: 4px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+  .meta-bar {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 8px 24px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow-x: auto;
+    white-space: nowrap;
+    min-height: 34px;
+  }
+
+  .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+
+  .meta-item .label { color: var(--text-muted); }
+
+  .meta-item .value {
+    color: var(--text-primary);
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    font-size: 11px;
+  }
+
+  .meta-item .git-dirty {
+    color: var(--accent-yellow);
+    font-weight: 600;
+  }
+
+  .dag-panel {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-primary);
+    overflow: auto;
+    padding: 12px 16px;
+    min-height: 80px;
+    max-height: 220px;
+  }
+
+  .dag-panel svg { display: block; }
+
+  .dag-node rect {
+    transition: stroke 0.2s;
+  }
+
+  .dag-node text {
+    fill: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 11px;
+    pointer-events: none;
+  }
+
+  .dag-node .node-doc {
+    fill: var(--text-secondary);
+    font-size: 9px;
+  }
+
+  .dag-edge {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 1.5;
+  }
+
+  .dag-arrowhead {
+    fill: var(--border);
+  }
 </style>
 </head>
 <body>
+  <div class="app-layout">
   <div class="header">
     <div class="header-left">
       <div class="header-logo"><span>just</span> live</div>
@@ -564,12 +643,14 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
     </div>
   </div>
   <div class="session-tabs" id="sessionTabs"></div>
+  <div class="meta-bar" id="metaBar" style="display:none"></div>
   <div class="container">
     <div class="sidebar">
       <div class="sidebar-header">Recipes</div>
       <div id="recipeList"></div>
     </div>
     <div class="main">
+      <div class="dag-panel" id="dagPanel" style="display:none"></div>
       <div class="main-header">
         <div class="main-title" id="mainTitle">Select a recipe</div>
       </div>
@@ -582,6 +663,7 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
         </div>
       </div>
     </div>
+  </div>
   </div>
 
 <script>
@@ -620,6 +702,8 @@ function getSession(sessionId, project) {
       recipeOrder: [],
       selectedRecipe: null,
       runStartMs: 0,
+      meta: null,
+      dag: [],
     };
     sessionOrder.push(sessionId);
   }
@@ -644,8 +728,6 @@ function getRecipe(session, name) {
 
 function handleMessage(raw) {
   const msg = JSON.parse(raw);
-
-  // LiveMessage format: { session_id, project, event }
   const sessionId = msg.session_id;
   const project = msg.project;
   const event = msg.event;
@@ -653,14 +735,23 @@ function handleMessage(raw) {
   if (!sessionId || !event) return;
 
   const session = getSession(sessionId, project);
-
-  // Auto-activate first session
   if (!activeSession) switchSession(sessionId);
 
   switch (event.type) {
     case 'run_started':
       session.status = 'running';
       session.runStartMs = event.timestamp_ms;
+      break;
+
+    case 'session_metadata':
+      session.meta = {
+        commandLine: event.command_line || '',
+        workingDir: event.working_dir || '',
+        gitBranch: event.git_branch,
+        gitCommit: event.git_commit,
+        gitDirty: event.git_dirty,
+      };
+      session.dag = event.recipes || [];
       break;
 
     case 'recipe_started': {
@@ -704,7 +795,6 @@ function handleMessage(raw) {
       } else {
         r.logs.push({ type: 'error', text: 'Recipe failed: ' + (event.error_message || 'unknown error') + ' (' + durStr + ')', time: event.timestamp_ms });
       }
-      // Auto-select next running recipe
       if (activeSession === sessionId && session.selectedRecipe === event.name) {
         const next = session.recipeOrder.find(n => session.recipes[n]?.status === 'running');
         if (next) session.selectedRecipe = next;
@@ -727,6 +817,8 @@ function switchSession(sessionId) {
 
 function render() {
   renderSessionTabs();
+  renderMetaBar();
+  renderDAG();
   renderSidebar();
   renderLogs();
   renderSessionCount();
@@ -748,6 +840,133 @@ function renderSessionTabs() {
     tab.innerHTML = '<div class="tab-dot ' + s.status + '"></div>' + escHtml(s.project);
     container.appendChild(tab);
   }
+}
+
+function renderMetaBar() {
+  const bar = document.getElementById('metaBar');
+  if (!activeSession || !sessions[activeSession]?.meta) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = '';
+  const m = sessions[activeSession].meta;
+  let html = '';
+  if (m.commandLine) {
+    html += '<div class="meta-item"><span class="label">$</span><span class="value">' + escHtml(m.commandLine) + '</span></div>';
+  }
+  if (m.workingDir) {
+    html += '<div class="meta-item"><span class="label">dir</span><span class="value">' + escHtml(m.workingDir) + '</span></div>';
+  }
+  if (m.gitBranch || m.gitCommit) {
+    let git = '';
+    if (m.gitBranch) git += m.gitBranch;
+    if (m.gitCommit) git += '@' + m.gitCommit;
+    html += '<div class="meta-item"><span class="label">git</span><span class="value">' + escHtml(git) + '</span>';
+    if (m.gitDirty) html += ' <span class="git-dirty">dirty</span>';
+    html += '</div>';
+  }
+  bar.innerHTML = html;
+}
+
+function renderDAG() {
+  const panel = document.getElementById('dagPanel');
+  if (!activeSession || !sessions[activeSession]) { panel.style.display = 'none'; return; }
+  const session = sessions[activeSession];
+  const dag = session.dag;
+  if (!dag || dag.length === 0) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+
+  const dagKey = activeSession + ':dag:' + session.recipeOrder.map(n => (session.recipes[n]?.status || 'p')).join('');
+  if (panel.dataset.dagKey === dagKey) return;
+  panel.dataset.dagKey = dagKey;
+
+  // Build lookup and compute depths
+  const byName = {};
+  for (const r of dag) byName[r.name] = r;
+
+  const depth = {};
+  function getDepth(name) {
+    if (depth[name] !== undefined) return depth[name];
+    depth[name] = -1; // cycle guard
+    const r = byName[name];
+    if (!r || r.dependencies.length === 0) { depth[name] = 0; return 0; }
+    let maxD = 0;
+    for (const d of r.dependencies) { const dd = getDepth(d); if (dd >= 0 && dd + 1 > maxD) maxD = dd + 1; }
+    depth[name] = maxD;
+    return maxD;
+  }
+  for (const r of dag) getDepth(r.name);
+
+  // Group by depth level
+  const levels = {};
+  let maxDepth = 0;
+  for (const [name, d] of Object.entries(depth)) {
+    if (d < 0) continue;
+    if (!levels[d]) levels[d] = [];
+    levels[d].push(name);
+    if (d > maxDepth) maxDepth = d;
+  }
+
+  // Layout
+  const nw = 130, nh = 34, hGap = 50, vGap = 14, pad = 16;
+  const positions = {};
+  let maxY = 0;
+  for (let d = 0; d <= maxDepth; d++) {
+    const names = levels[d] || [];
+    const x = pad + d * (nw + hGap);
+    for (let i = 0; i < names.length; i++) {
+      const y = pad + i * (nh + vGap);
+      positions[names[i]] = { x, y };
+      if (y + nh > maxY) maxY = y + nh;
+    }
+  }
+  const svgW = pad + (maxDepth + 1) * (nw + hGap);
+  const svgH = maxY + pad;
+
+  const statusColors = {
+    pending: 'var(--text-muted)',
+    running: 'var(--accent-yellow)',
+    success: 'var(--accent-green)',
+    failed: 'var(--accent-red)',
+  };
+
+  let svg = '<svg width="' + svgW + '" height="' + svgH + '" xmlns="http://www.w3.org/2000/svg">';
+  svg += '<defs><marker id="ah" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><polygon points="0 0, 6 2, 0 4" class="dag-arrowhead"/></marker></defs>';
+
+  // Edges
+  for (const r of dag) {
+    const to = positions[r.name];
+    if (!to) continue;
+    for (const depName of r.dependencies) {
+      const from = positions[depName];
+      if (!from) continue;
+      const x1 = from.x + nw, y1 = from.y + nh / 2;
+      const x2 = to.x, y2 = to.y + nh / 2;
+      const cx = (x1 + x2) / 2;
+      svg += '<path class="dag-edge" d="M' + x1 + ' ' + y1 + ' C' + cx + ' ' + y1 + ' ' + cx + ' ' + y2 + ' ' + x2 + ' ' + y2 + '" marker-end="url(#ah)"/>';
+    }
+  }
+
+  // Nodes
+  for (const r of dag) {
+    const pos = positions[r.name];
+    if (!pos) continue;
+    const st = session.recipes[r.name]?.status || 'pending';
+    const col = statusColors[st] || statusColors.pending;
+    const fill = st === 'running' ? 'var(--bg-hover)' : 'var(--bg-tertiary)';
+    svg += '<g class="dag-node" style="cursor:pointer" onclick="dagClick(\'' + escHtml(r.name) + '\')">';
+    svg += '<rect x="' + pos.x + '" y="' + pos.y + '" width="' + nw + '" height="' + nh + '" rx="6" fill="' + fill + '" stroke="' + col + '" stroke-width="2"/>';
+    svg += '<text x="' + (pos.x + nw/2) + '" y="' + (pos.y + nh/2 + 4) + '" text-anchor="middle" font-size="11" fill="var(--text-primary)">' + escHtml(r.name) + '</text>';
+    svg += '</g>';
+  }
+  svg += '</svg>';
+  panel.innerHTML = svg;
+}
+
+function dagClick(name) {
+  if (!activeSession) return;
+  sessions[activeSession].selectedRecipe = name;
+  render();
 }
 
 function renderSidebar() {
