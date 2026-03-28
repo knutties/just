@@ -26,6 +26,7 @@ pub(crate) struct Config {
   pub(crate) one: bool,
   pub(crate) overrides: BTreeMap<(Modulepath, String), String>,
   pub(crate) search_config: SearchConfig,
+  pub(crate) serve_port: u16,
   pub(crate) shell: Option<String>,
   pub(crate) shell_args: Option<Vec<String>>,
   pub(crate) shell_command: bool,
@@ -157,6 +158,10 @@ impl Config {
         request: serde_json::from_str(request)
           .map_err(|source| ConfigError::RequestParse { source })?,
       })
+    } else if arguments.subcommand.serve {
+      Ok(Subcommand::Serve {
+        port: arguments.serve_port,
+      })
     } else if let Some(path) = arguments.subcommand.show.as_deref() {
       Ok(Subcommand::Show {
         path: Self::parse_modulepath(path)?,
@@ -265,6 +270,7 @@ impl Config {
       one: arguments.one,
       overrides,
       search_config,
+      serve_port: arguments.serve_port,
       shell: arguments.shell,
       shell_args: if arguments.clear_shell_args {
         Some(Vec::new())

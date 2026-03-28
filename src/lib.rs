@@ -238,6 +238,7 @@ mod justfile;
 mod keyed;
 mod keyword;
 mod lexer;
+mod live_client;
 mod live_event;
 mod live_server;
 mod line;

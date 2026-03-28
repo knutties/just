@@ -45,6 +45,9 @@ pub(crate) enum Subcommand {
   Run {
     arguments: Vec<String>,
   },
+  Serve {
+    port: u16,
+  },
   Show {
     path: Modulepath,
   },
@@ -79,6 +82,10 @@ impl Subcommand {
       Init => return Self::init(config),
       Man => return Self::man(),
       Request { request } => return Self::request(request),
+      Serve { port } => {
+        live_server::start_central(*port);
+        return Ok(());
+      }
       _ => {}
     }
 
@@ -116,7 +123,8 @@ impl Subcommand {
       Summary => Self::summary(config, justfile),
       Usage { path } => Self::usage(config, justfile, path)?,
       Variables => Self::variables(justfile),
-      Changelog | Completions { .. } | Edit | Format | Init | Man | Request { .. } => {
+      Changelog | Completions { .. } | Edit | Format | Init | Man | Request { .. }
+      | Serve { .. } => {
         unreachable!()
       }
     }
@@ -817,6 +825,7 @@ impl Subcommand {
       | Self::Format
       | Self::Init
       | Self::Man
+      | Self::Serve { .. }
       | Self::Summary
       | Self::Variables => false,
       Self::Choose { .. }

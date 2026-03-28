@@ -20,15 +20,24 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
 
   let live = config.as_ref().map(|c| c.live).unwrap_or(false);
 
-  let _live_port = if live {
+  if live {
     let (tx, _rx) = tokio::sync::broadcast::channel(256);
     live_event::set_sender(tx.clone());
-    let port = live_server::start(tx);
-    eprintln!("Live visualization at http://127.0.0.1:{port}");
-    Some(port)
-  } else {
-    None
-  };
+
+    let project = std::env::current_dir()
+      .ok()
+      .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+      .unwrap_or_else(|| "unknown".into());
+
+    if let Ok(url) = std::env::var("JUST_LIVE_URL") {
+      let session_id = uuid::Uuid::new_v4().to_string();
+      live_client::start(tx, &url, &session_id, &project);
+      eprintln!("Publishing live events to {url}");
+    } else {
+      let port = live_server::start_embedded(tx, &project);
+      eprintln!("Live visualization at http://127.0.0.1:{port}");
+    }
+  }
 
   let loader = Loader::new();
 
@@ -52,15 +61,19 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
       timestamp_ms: live_event::now_ms(),
     });
 
-    if success {
-      eprintln!("Recipes complete. Visualization server still running. Press Ctrl+C to exit.");
-    } else {
-      eprintln!("Recipes failed. Visualization server still running. Press Ctrl+C to exit.");
-    }
+    // Give the client/server a moment to deliver the final event
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Keep the server alive so users can inspect the visualization
-    loop {
-      std::thread::sleep(std::time::Duration::from_secs(3600));
+    // If running with embedded server, keep alive for inspection
+    if std::env::var("JUST_LIVE_URL").is_err() {
+      if success {
+        eprintln!("Recipes complete. Visualization server still running. Press Ctrl+C to exit.");
+      } else {
+        eprintln!("Recipes failed. Visualization server still running. Press Ctrl+C to exit.");
+      }
+      loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+      }
     }
   }
 

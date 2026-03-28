@@ -228,6 +228,15 @@ pub struct Arguments {
   )]
   pub(crate) quiet: bool,
   #[arg(
+    default_value = "6446",
+    env = "JUST_SERVE_PORT",
+    help = "Port for the live visualization server",
+    long,
+    requires = "serve",
+    value_name = "PORT"
+  )]
+  pub(crate) serve_port: u16,
+  #[arg(
     add = ArgValueCompleter::new(Completer::complete_variable),
     help = "Override <VARIABLE> with <VALUE>",
     long,
@@ -413,6 +422,12 @@ pub(crate) struct Subcommand {
     long,
   )]
   pub(crate) request: Option<String>,
+  #[arg(
+    help = "Start a central live visualization server",
+    help_heading = Self::HEADING,
+    long,
+  )]
+  pub(crate) serve: bool,
   #[arg(
     add = ArgValueCompleter::new(Completer::complete_recipe),
     conflicts_with = "arguments",

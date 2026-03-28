@@ -11,32 +11,95 @@ use axum::{
 };
 use tokio::sync::broadcast;
 
+#[derive(Clone)]
 struct AppState {
-  history: Mutex<Vec<String>>,
-  tx: broadcast::Sender<String>,
+  sessions: Arc<Mutex<Vec<SessionInfo>>>,
+  web_tx: broadcast::Sender<String>,
 }
 
-pub(crate) fn start(tx: broadcast::Sender<String>) -> u16 {
+struct SessionInfo {
+  events: Vec<String>,
+  project: String,
+  session_id: String,
+  status: String,
+}
+
+/// Start the central server (for `just --serve`). Blocks forever.
+pub(crate) fn start_central(port: u16) {
+  let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+  rt.block_on(async {
+    let (web_tx, _) = broadcast::channel(4096);
+    let state = AppState {
+      sessions: Arc::new(Mutex::new(Vec::new())),
+      web_tx,
+    };
+
+    let app = Router::new()
+      .route("/", get(index_handler))
+      .route("/ws", get(ws_handler))
+      .route("/api/publish", get(publish_handler))
+      .with_state(state);
+
+    let addr = format!("0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr)
+      .await
+      .unwrap_or_else(|e| panic!("failed to bind live server on {addr}: {e}"));
+
+    let port = listener
+      .local_addr()
+      .expect("failed to get local addr")
+      .port();
+
+    eprintln!("Just live server running at http://0.0.0.0:{port}");
+    eprintln!("Set JUST_LIVE_URL=http://127.0.0.1:{port} in your projects to publish here.");
+
+    axum::serve(listener, app)
+      .await
+      .expect("live server failed");
+  });
+}
+
+/// Start the embedded server (for `just --live` without `JUST_LIVE_URL`).
+/// Returns the port.
+pub(crate) fn start_embedded(
+  event_tx: broadcast::Sender<String>,
+  project: &str,
+) -> u16 {
   let (port_tx, port_rx) = std::sync::mpsc::channel();
 
-  let mut history_rx = tx.subscribe();
-  let state = Arc::new(AppState {
-    history: Mutex::new(Vec::new()),
-    tx,
-  });
+  let mut event_rx = event_tx.subscribe();
+  let session_id = uuid::Uuid::new_v4().to_string();
+  let project = project.to_string();
 
-  let history_state = Arc::clone(&state);
+  let (web_tx, _) = broadcast::channel(4096);
+  let state = AppState {
+    sessions: Arc::new(Mutex::new(vec![SessionInfo {
+      events: Vec::new(),
+      project: project.clone(),
+      session_id: session_id.clone(),
+      status: "running".into(),
+    }])),
+    web_tx: web_tx.clone(),
+  };
+
+  let sessions = Arc::clone(&state.sessions);
 
   std::thread::spawn(move || {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
-      // Background task to record event history
-      let hs = history_state;
+      // Forward local events to web broadcast as LiveMessages
       tokio::spawn(async move {
-        while let Ok(msg) = history_rx.recv().await {
-          if let Ok(mut history) = hs.history.lock() {
-            history.push(msg);
+        while let Ok(event_json) = event_rx.recv().await {
+          let wrapped = wrap_event(&session_id, &project, &event_json);
+
+          if let Ok(mut s) = sessions.lock() {
+            if let Some(session) = s.first_mut() {
+              session.events.push(wrapped.clone());
+              update_session_status(session, &event_json);
+            }
           }
+
+          let _ = web_tx.send(wrapped);
         }
       });
 
@@ -65,36 +128,146 @@ pub(crate) fn start(tx: broadcast::Sender<String>) -> u16 {
   port_rx.recv().expect("failed to receive port")
 }
 
+fn wrap_event(session_id: &str, project: &str, event_json: &str) -> String {
+  format!(
+    r#"{{"session_id":{},"project":{},"event":{}}}"#,
+    serde_json::to_string(session_id).unwrap_or_default(),
+    serde_json::to_string(project).unwrap_or_default(),
+    event_json
+  )
+}
+
+fn update_session_status(session: &mut SessionInfo, event_json: &str) {
+  if let Ok(val) = serde_json::from_str::<serde_json::Value>(event_json) {
+    if let Some(event_type) = val.get("type").and_then(|t| t.as_str()) {
+      match event_type {
+        "run_started" => session.status = "running".into(),
+        "run_completed" => {
+          let success = val.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+          session.status = if success { "completed" } else { "failed" }.into();
+        }
+        _ => {}
+      }
+    }
+  }
+}
+
 async fn index_handler() -> Html<&'static str> {
   Html(LIVE_HTML)
 }
 
 async fn ws_handler(
   ws: WebSocketUpgrade,
-  State(state): State<Arc<AppState>>,
+  State(state): State<AppState>,
 ) -> axum::response::Response {
-  ws.on_upgrade(move |socket| handle_socket(socket, state))
+  ws.on_upgrade(move |socket| handle_web_socket(socket, state))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
-  // Replay history — clone to release the lock before awaiting
-  let history_snapshot = state
-    .history
+async fn handle_web_socket(mut socket: WebSocket, state: AppState) {
+  // Replay all session events
+  let all_events: Vec<String> = state
+    .sessions
     .lock()
-    .map(|h| h.clone())
+    .map(|sessions| {
+      sessions
+        .iter()
+        .flat_map(|s| s.events.clone())
+        .collect()
+    })
     .unwrap_or_default();
 
-  for msg in history_snapshot {
-    if socket.send(Message::Text(msg)).await.is_err() {
+  for event in all_events {
+    if socket.send(Message::Text(event)).await.is_err() {
       return;
     }
   }
 
   // Stream live events
-  let mut rx = state.tx.subscribe();
+  let mut rx = state.web_tx.subscribe();
   while let Ok(msg) = rx.recv().await {
     if socket.send(Message::Text(msg)).await.is_err() {
       break;
+    }
+  }
+}
+
+async fn publish_handler(
+  ws: WebSocketUpgrade,
+  State(state): State<AppState>,
+) -> axum::response::Response {
+  ws.on_upgrade(move |socket| handle_publish(socket, state))
+}
+
+async fn handle_publish(mut socket: WebSocket, state: AppState) {
+  let mut session_id: Option<String> = None;
+
+  while let Some(Ok(msg)) = socket.recv().await {
+    let Message::Text(text) = msg else {
+      continue;
+    };
+
+    // Parse the LiveMessage wrapper
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
+      continue;
+    };
+
+    let sid = parsed
+      .get("session_id")
+      .and_then(|v| v.as_str())
+      .unwrap_or("unknown")
+      .to_string();
+
+    let project = parsed
+      .get("project")
+      .and_then(|v| v.as_str())
+      .unwrap_or("unknown")
+      .to_string();
+
+    // Create session on first message
+    if session_id.is_none() {
+      session_id = Some(sid.clone());
+      if let Ok(mut sessions) = state.sessions.lock() {
+        sessions.push(SessionInfo {
+          events: Vec::new(),
+          project,
+          session_id: sid.clone(),
+          status: "running".into(),
+        });
+      }
+    }
+
+    // Store event and update status
+    if let Ok(mut sessions) = state.sessions.lock() {
+      if let Some(session) = sessions.iter_mut().find(|s| s.session_id == sid) {
+        session.events.push(text.clone());
+        if let Some(event) = parsed.get("event") {
+          if let Ok(event_str) = serde_json::to_string(event) {
+            update_session_status(session, &event_str);
+          }
+        }
+      }
+    }
+
+    // Broadcast to web UI clients
+    let _ = state.web_tx.send(text);
+  }
+
+  // Connection closed — mark session as disconnected if still running
+  if let Some(sid) = session_id {
+    if let Ok(mut sessions) = state.sessions.lock() {
+      if let Some(session) = sessions.iter_mut().find(|s| s.session_id == sid) {
+        if session.status == "running" {
+          session.status = "disconnected".into();
+
+          // Broadcast a synthetic disconnected event
+          let wrapped = wrap_event(
+            &sid,
+            &session.project,
+            r#"{"type":"run_completed","success":false,"duration_ms":0,"timestamp_ms":0}"#,
+          );
+          let _ = state.web_tx.send(wrapped);
+        }
+      }
     }
   }
 }
@@ -136,7 +309,7 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 24px;
+    padding: 12px 24px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-secondary);
   }
@@ -153,49 +326,79 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
     color: var(--text-primary);
   }
 
-  .header-logo span {
-    color: var(--accent-purple);
+  .header-logo span { color: var(--accent-purple); }
+
+  .session-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 24px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    min-height: 38px;
+    align-items: flex-end;
   }
 
-  .run-status {
+  .session-tab {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 14px;
-    padding: 4px 12px;
-    border-radius: 20px;
-    background: var(--bg-tertiary);
+    gap: 6px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    transition: color 0.15s, border-color 0.15s;
   }
 
-  .run-status .dot {
+  .session-tab:hover { color: var(--text-primary); }
+
+  .session-tab.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent-blue);
+  }
+
+  .session-tab .tab-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
     background: var(--text-muted);
+    flex-shrink: 0;
   }
 
-  .run-status.running .dot {
+  .session-tab .tab-dot.running {
     background: var(--accent-yellow);
     animation: pulse 1.5s ease-in-out infinite;
   }
-
-  .run-status.success .dot { background: var(--accent-green); }
-  .run-status.failed .dot { background: var(--accent-red); }
+  .session-tab .tab-dot.completed { background: var(--accent-green); }
+  .session-tab .tab-dot.failed, .session-tab .tab-dot.disconnected { background: var(--accent-red); }
 
   @keyframes pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
     50% { opacity: 0.5; transform: scale(1.3); }
   }
 
-  .header-timer {
+  .header-info {
     font-size: 13px;
     color: var(--text-secondary);
     font-variant-numeric: tabular-nums;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .session-count {
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    font-size: 12px;
   }
 
   .container {
     display: flex;
-    height: calc(100vh - 57px);
+    height: calc(100vh - 95px);
   }
 
   .sidebar {
@@ -226,18 +429,14 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
     transition: background 0.15s, border-color 0.15s;
   }
 
-  .recipe-item:hover {
-    background: var(--bg-hover);
-  }
+  .recipe-item:hover { background: var(--bg-hover); }
 
   .recipe-item.selected {
     background: var(--bg-tertiary);
     border-left-color: var(--accent-blue);
   }
 
-  .recipe-item.dependency {
-    padding-left: 36px;
-  }
+  .recipe-item.dependency { padding-left: 36px; }
 
   .recipe-icon {
     width: 20px;
@@ -250,10 +449,7 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
 
   .recipe-icon svg { width: 16px; height: 16px; }
 
-  .recipe-info {
-    flex: 1;
-    min-width: 0;
-  }
+  .recipe-info { flex: 1; min-width: 0; }
 
   .recipe-name {
     font-size: 14px;
@@ -295,10 +491,7 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
     background: var(--bg-secondary);
   }
 
-  .main-title {
-    font-size: 16px;
-    font-weight: 600;
-  }
+  .main-title { font-size: 16px; font-weight: 600; }
 
   .log-container {
     flex: 1;
@@ -315,9 +508,7 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
     transition: background 0.1s;
   }
 
-  .log-line:hover {
-    background: var(--bg-tertiary);
-  }
+  .log-line:hover { background: var(--bg-tertiary); }
 
   .log-timestamp {
     color: var(--text-muted);
@@ -333,22 +524,10 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
     flex: 1;
   }
 
-  .log-line.command .log-content {
-    color: var(--accent-blue);
-  }
-
-  .log-line.success .log-content {
-    color: var(--accent-green);
-  }
-
-  .log-line.error .log-content {
-    color: var(--accent-red);
-  }
-
-  .log-line.info .log-content {
-    color: var(--text-secondary);
-    font-style: italic;
-  }
+  .log-line.command .log-content { color: var(--accent-blue); }
+  .log-line.success .log-content { color: var(--accent-green); }
+  .log-line.error .log-content { color: var(--accent-red); }
+  .log-line.info .log-content { color: var(--text-secondary); font-style: italic; }
 
   .empty-state {
     display: flex;
@@ -360,42 +539,15 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
     gap: 12px;
   }
 
-  .empty-state svg {
-    width: 48px;
-    height: 48px;
-    opacity: 0.4;
-  }
-
-  .empty-state p {
-    font-size: 14px;
-  }
-
-  .connecting-banner {
-    padding: 8px 16px;
-    background: var(--bg-tertiary);
-    border-bottom: 1px solid var(--border);
-    font-size: 13px;
-    color: var(--accent-yellow);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .connecting-banner.connected {
-    color: var(--accent-green);
-  }
+  .empty-state svg { width: 48px; height: 48px; opacity: 0.4; }
+  .empty-state p { font-size: 14px; }
 
   @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
   }
+  .spinner { animation: spin 1s linear infinite; color: var(--accent-yellow); }
 
-  .spinner {
-    animation: spin 1s linear infinite;
-    color: var(--accent-yellow);
-  }
-
-  /* Scrollbar */
   ::-webkit-scrollbar { width: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--bg-hover); border-radius: 4px; }
@@ -406,13 +558,12 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
   <div class="header">
     <div class="header-left">
       <div class="header-logo"><span>just</span> live</div>
-      <div class="run-status" id="runStatus">
-        <div class="dot"></div>
-        <span id="runStatusText">Waiting...</span>
-      </div>
     </div>
-    <div class="header-timer" id="headerTimer">00:00</div>
+    <div class="header-info">
+      <span class="session-count" id="sessionCount">0 sessions</span>
+    </div>
   </div>
+  <div class="session-tabs" id="sessionTabs"></div>
   <div class="container">
     <div class="sidebar">
       <div class="sidebar-header">Recipes</div>
@@ -434,15 +585,10 @@ const LIVE_HTML: &str = r#"<!DOCTYPE html>
   </div>
 
 <script>
-const state = {
-  recipes: {},
-  recipeOrder: [],
-  selectedRecipe: null,
-  runStarted: false,
-  runCompleted: false,
-  runSuccess: false,
-  runStartMs: 0,
-};
+// Multi-session state
+const sessions = {};    // session_id -> session state
+const sessionOrder = [];
+let activeSession = null;
 
 const SVG = {
   pending: `<svg viewBox="0 0 16 16" fill="var(--text-muted)"><circle cx="8" cy="8" r="7" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>`,
@@ -464,131 +610,171 @@ function formatTime(ms) {
   return d.toLocaleTimeString('en-US', { hour12: false });
 }
 
-function getRecipe(name) {
-  if (!state.recipes[name]) {
-    state.recipes[name] = {
-      name: name,
+function getSession(sessionId, project) {
+  if (!sessions[sessionId]) {
+    sessions[sessionId] = {
+      sessionId,
+      project: project || 'unknown',
+      status: 'running',
+      recipes: {},
+      recipeOrder: [],
+      selectedRecipe: null,
+      runStartMs: 0,
+    };
+    sessionOrder.push(sessionId);
+  }
+  return sessions[sessionId];
+}
+
+function getRecipe(session, name) {
+  if (!session.recipes[name]) {
+    session.recipes[name] = {
+      name,
       doc: null,
       status: 'pending',
       isDependency: false,
       startMs: 0,
       durationMs: 0,
       logs: [],
-      errorMessage: null,
     };
-    state.recipeOrder.push(name);
+    session.recipeOrder.push(name);
   }
-  return state.recipes[name];
+  return session.recipes[name];
 }
 
-function handleEvent(event) {
+function handleMessage(raw) {
+  const msg = JSON.parse(raw);
+
+  // LiveMessage format: { session_id, project, event }
+  const sessionId = msg.session_id;
+  const project = msg.project;
+  const event = msg.event;
+
+  if (!sessionId || !event) return;
+
+  const session = getSession(sessionId, project);
+
+  // Auto-activate first session
+  if (!activeSession) switchSession(sessionId);
+
   switch (event.type) {
     case 'run_started':
-      state.runStarted = true;
-      state.runStartMs = event.timestamp_ms;
-      updateRunStatus('running', 'Running...');
+      session.status = 'running';
+      session.runStartMs = event.timestamp_ms;
       break;
 
     case 'recipe_started': {
-      const r = getRecipe(event.name);
+      const r = getRecipe(session, event.name);
       r.status = 'running';
       r.isDependency = event.is_dependency;
       r.doc = event.doc;
       r.startMs = event.timestamp_ms;
-      r.logs.push({ type: 'info', text: `Recipe started`, time: event.timestamp_ms });
-      if (!state.selectedRecipe) selectRecipe(event.name);
+      r.logs.push({ type: 'info', text: 'Recipe started', time: event.timestamp_ms });
+      if (activeSession === sessionId && !session.selectedRecipe) {
+        session.selectedRecipe = event.name;
+      }
       break;
     }
 
     case 'recipe_line': {
-      const r = getRecipe(event.recipe);
-      r.logs.push({ type: 'command', text: `$ ${event.command}`, time: event.timestamp_ms });
-      if (state.selectedRecipe === event.recipe) autoScroll();
+      const r = getRecipe(session, event.recipe);
+      r.logs.push({ type: 'command', text: '$ ' + event.command, time: event.timestamp_ms });
       break;
     }
 
     case 'recipe_line_completed': {
-      const r = getRecipe(event.recipe);
+      const r = getRecipe(session, event.recipe);
       const status = event.success ? 'success' : 'error';
-      const codeStr = event.code !== null ? ` (exit code ${event.code})` : '';
-      const durStr = formatDuration(event.duration_ms);
+      const codeStr = event.code !== null ? ' (exit code ' + event.code + ')' : '';
       r.logs.push({
         type: status,
-        text: `${event.success ? '✓' : '✗'} Completed in ${durStr}${codeStr}`,
+        text: (event.success ? '\u2713' : '\u2717') + ' Completed in ' + formatDuration(event.duration_ms) + codeStr,
         time: event.timestamp_ms,
       });
-      if (state.selectedRecipe === event.recipe) autoScroll();
       break;
     }
 
     case 'recipe_completed': {
-      const r = getRecipe(event.name);
+      const r = getRecipe(session, event.name);
       r.status = event.success ? 'success' : 'failed';
       r.durationMs = event.duration_ms;
-      r.errorMessage = event.error_message;
       const durStr = formatDuration(event.duration_ms);
       if (event.success) {
-        r.logs.push({ type: 'success', text: `Recipe completed successfully in ${durStr}`, time: event.timestamp_ms });
+        r.logs.push({ type: 'success', text: 'Recipe completed successfully in ' + durStr, time: event.timestamp_ms });
       } else {
-        r.logs.push({ type: 'error', text: `Recipe failed: ${event.error_message || 'unknown error'} (${durStr})`, time: event.timestamp_ms });
+        r.logs.push({ type: 'error', text: 'Recipe failed: ' + (event.error_message || 'unknown error') + ' (' + durStr + ')', time: event.timestamp_ms });
       }
       // Auto-select next running recipe
-      if (state.selectedRecipe === event.name) {
-        const nextRunning = state.recipeOrder.find(n => state.recipes[n]?.status === 'running');
-        if (nextRunning) selectRecipe(nextRunning);
+      if (activeSession === sessionId && session.selectedRecipe === event.name) {
+        const next = session.recipeOrder.find(n => session.recipes[n]?.status === 'running');
+        if (next) session.selectedRecipe = next;
       }
       break;
     }
 
     case 'run_completed':
-      state.runCompleted = true;
-      state.runSuccess = event.success;
-      updateRunStatus(
-        event.success ? 'success' : 'failed',
-        event.success ? 'Completed' : 'Failed'
-      );
+      session.status = event.success ? 'completed' : 'failed';
       break;
   }
 
-  renderSidebar();
-  renderLogs();
+  render();
 }
 
-function updateRunStatus(cls, text) {
-  const el = document.getElementById('runStatus');
-  el.className = 'run-status ' + cls;
-  document.getElementById('runStatusText').textContent = text;
+function switchSession(sessionId) {
+  activeSession = sessionId;
+  render();
 }
 
-function selectRecipe(name) {
-  state.selectedRecipe = name;
-  document.getElementById('mainTitle').textContent = name;
+function render() {
+  renderSessionTabs();
   renderSidebar();
   renderLogs();
+  renderSessionCount();
+}
+
+function renderSessionCount() {
+  const n = sessionOrder.length;
+  document.getElementById('sessionCount').textContent = n + (n === 1 ? ' session' : ' sessions');
+}
+
+function renderSessionTabs() {
+  const container = document.getElementById('sessionTabs');
+  container.innerHTML = '';
+  for (const sid of sessionOrder) {
+    const s = sessions[sid];
+    const tab = document.createElement('div');
+    tab.className = 'session-tab' + (activeSession === sid ? ' active' : '');
+    tab.onclick = () => switchSession(sid);
+    tab.innerHTML = '<div class="tab-dot ' + s.status + '"></div>' + escHtml(s.project);
+    container.appendChild(tab);
+  }
 }
 
 function renderSidebar() {
   const container = document.getElementById('recipeList');
   container.innerHTML = '';
-  for (const name of state.recipeOrder) {
-    const r = state.recipes[name];
+
+  if (!activeSession || !sessions[activeSession]) return;
+  const session = sessions[activeSession];
+
+  for (const name of session.recipeOrder) {
+    const r = session.recipes[name];
     const item = document.createElement('div');
     item.className = 'recipe-item' +
       (r.isDependency ? ' dependency' : '') +
-      (state.selectedRecipe === name ? ' selected' : '');
-    item.onclick = () => selectRecipe(name);
+      (session.selectedRecipe === name ? ' selected' : '');
+    item.onclick = () => { session.selectedRecipe = name; render(); };
 
     const icon = SVG[r.status] || SVG.pending;
     const dur = r.durationMs > 0 ? formatDuration(r.durationMs) : (r.status === 'running' ? '...' : '');
 
-    item.innerHTML = `
-      <div class="recipe-icon">${icon}</div>
-      <div class="recipe-info">
-        <div class="recipe-name">${escHtml(name)}</div>
-        ${r.doc ? `<div class="recipe-doc">${escHtml(r.doc)}</div>` : ''}
-      </div>
-      ${dur ? `<div class="recipe-duration">${dur}</div>` : ''}
-    `;
+    item.innerHTML =
+      '<div class="recipe-icon">' + icon + '</div>' +
+      '<div class="recipe-info">' +
+        '<div class="recipe-name">' + escHtml(name) + '</div>' +
+        (r.doc ? '<div class="recipe-doc">' + escHtml(r.doc) + '</div>' : '') +
+      '</div>' +
+      (dur ? '<div class="recipe-duration">' + dur + '</div>' : '');
     container.appendChild(item);
   }
 }
@@ -596,37 +782,39 @@ function renderSidebar() {
 function renderLogs() {
   const container = document.getElementById('logContainer');
   const emptyState = document.getElementById('emptyState');
-  const recipe = state.selectedRecipe ? state.recipes[state.selectedRecipe] : null;
 
-  if (!recipe || recipe.logs.length === 0) {
+  if (!activeSession || !sessions[activeSession]) {
     if (emptyState) emptyState.style.display = '';
     return;
   }
 
-  if (emptyState) emptyState.style.display = 'none';
+  const session = sessions[activeSession];
+  const recipe = session.selectedRecipe ? session.recipes[session.selectedRecipe] : null;
 
-  // Only re-render if content changed
-  const logKey = recipe.name + ':' + recipe.logs.length;
+  if (!recipe || recipe.logs.length === 0) {
+    if (emptyState) emptyState.style.display = '';
+    document.getElementById('mainTitle').textContent = 'Select a recipe';
+    return;
+  }
+
+  if (emptyState) emptyState.style.display = 'none';
+  document.getElementById('mainTitle').textContent = session.project + ' > ' + recipe.name;
+
+  const logKey = activeSession + ':' + recipe.name + ':' + recipe.logs.length;
   if (container.dataset.logKey === logKey) return;
   container.dataset.logKey = logKey;
 
   let html = '';
   for (const log of recipe.logs) {
     const time = formatTime(log.time);
-    html += `<div class="log-line ${log.type}">
-      <span class="log-timestamp">${time}</span>
-      <span class="log-content">${escHtml(log.text)}</span>
-    </div>`;
+    html += '<div class="log-line ' + log.type + '">' +
+      '<span class="log-timestamp">' + time + '</span>' +
+      '<span class="log-content">' + escHtml(log.text) + '</span>' +
+    '</div>';
   }
   container.innerHTML = html;
-  autoScroll();
-}
 
-function autoScroll() {
-  requestAnimationFrame(() => {
-    const el = document.getElementById('logContainer');
-    el.scrollTop = el.scrollHeight;
-  });
+  requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
 }
 
 function escHtml(s) {
@@ -634,21 +822,15 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// Timer
+// Timer: update running recipe durations
 setInterval(() => {
-  if (!state.runStarted || !state.runStartMs) return;
-  const elapsed = state.runCompleted ? 0 : (Date.now() - state.runStartMs);
-  if (!state.runCompleted && elapsed >= 0) {
-    const secs = Math.floor(elapsed / 1000);
-    const mins = Math.floor(secs / 60);
-    document.getElementById('headerTimer').textContent =
-      String(mins).padStart(2, '0') + ':' + String(secs % 60).padStart(2, '0');
-  }
-  // Update running recipe durations
-  for (const name of state.recipeOrder) {
-    const r = state.recipes[name];
-    if (r.status === 'running' && r.startMs) {
-      r.durationMs = Date.now() - r.startMs;
+  for (const sid of sessionOrder) {
+    const s = sessions[sid];
+    for (const name of s.recipeOrder) {
+      const r = s.recipes[name];
+      if (r.status === 'running' && r.startMs) {
+        r.durationMs = Date.now() - r.startMs;
+      }
     }
   }
   renderSidebar();
@@ -656,22 +838,14 @@ setInterval(() => {
 
 // WebSocket connection
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/ws`);
+  const ws = new WebSocket('ws://' + location.host + '/ws');
 
   ws.onmessage = (e) => {
-    try {
-      const event = JSON.parse(e.data);
-      handleEvent(event);
-    } catch (err) {
-      console.error('Failed to parse event:', err);
-    }
+    try { handleMessage(e.data); }
+    catch (err) { console.error('Failed to parse event:', err); }
   };
 
-  ws.onclose = () => {
-    if (state.runCompleted) return;
-    setTimeout(connect, 1000);
-  };
-
+  ws.onclose = () => { setTimeout(connect, 1000); };
   ws.onerror = () => ws.close();
 }
 
