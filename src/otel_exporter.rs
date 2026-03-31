@@ -47,19 +47,16 @@ fn new_span_id() -> SpanId {
 pub(crate) fn start(event_tx: broadcast::Sender<String>, service_name: &str) {
   let mut event_rx = event_tx.subscribe();
 
-  // Set service name for the OTLP exporter (only if not already overridden).
-  if std::env::var("OTEL_SERVICE_NAME").is_err() {
-    // SAFETY: Called early in startup before other threads read this env var.
-    unsafe {
-      std::env::set_var("OTEL_SERVICE_NAME", service_name);
-    }
-  }
-
   let trace_id = TraceId::from_bytes(rand::random::<[u8; 16]>());
   let root_span_id = new_span_id();
 
   let scope = InstrumentationScope::builder("just")
     .with_version(env!("CARGO_PKG_VERSION"))
+    .build();
+
+  let service_name = service_name.to_string();
+  let resource = opentelemetry_sdk::Resource::builder()
+    .with_service_name(service_name)
     .build();
 
   let state = Arc::new(Mutex::new(OtelState {
@@ -90,6 +87,8 @@ pub(crate) fn start(event_tx: broadcast::Sender<String>, service_name: &str) {
           return;
         }
       };
+
+      exporter.set_resource(&resource);
 
       loop {
         let event_json = match event_rx.recv().await {
