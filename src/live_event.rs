@@ -17,14 +17,14 @@ static LIVE_SENDER: LazyLock<Mutex<Option<broadcast::Sender<String>>>> =
 static RUN_START: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
 static COMMAND_LINE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub(crate) struct RecipeNode {
   pub(crate) dependencies: Vec<String>,
   pub(crate) doc: Option<String>,
   pub(crate) name: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum LiveEvent {
   RecipeCompleted {

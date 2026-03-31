@@ -250,6 +250,7 @@ mod name;
 mod namepath;
 mod number;
 mod numerator;
+mod otel_exporter;
 mod ordinal;
 mod output_error;
 mod parameter;

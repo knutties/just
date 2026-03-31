@@ -35,6 +35,9 @@ is_executable = "1.0.4"
 lexiclean = "0.0.1"
 libc = "0.2.0"
 num_cpus = "1.15.0"
+opentelemetry = { version = "0.31", features = ["trace"] }
+opentelemetry_sdk = { version = "0.31", features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-client"] }
 percent-encoding = "2.3.1"
 rand = "0.10.0"
 regex = "1.10.4"

@@ -19,24 +19,33 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
     .unwrap_or_default();
 
   let live = config.as_ref().map(|c| c.live).unwrap_or(false);
+  let otel = config.as_ref().map(|c| c.otel).unwrap_or(false);
 
-  if live {
+  // Set up event broadcasting if live visualization or OTel export is enabled
+  if live || otel {
     let (tx, _rx) = tokio::sync::broadcast::channel(256);
     live_event::set_sender(tx.clone());
     live_event::set_command_line(std::env::args().collect::<Vec<_>>().join(" "));
 
-    let project = std::env::current_dir()
-      .ok()
-      .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-      .unwrap_or_else(|| "unknown".into());
+    if live {
+      let project = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "unknown".into());
 
-    if let Ok(url) = std::env::var("JUST_LIVE_URL") {
-      let session_id = uuid::Uuid::new_v4().to_string();
-      live_client::start(tx, &url, &session_id, &project);
-      eprintln!("Publishing live events to {url}");
-    } else {
-      let port = live_server::start_embedded(tx, &project);
-      eprintln!("Live visualization at http://127.0.0.1:{port}");
+      if let Ok(url) = std::env::var("JUST_LIVE_URL") {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        live_client::start(tx.clone(), &url, &session_id, &project);
+        eprintln!("Publishing live events to {url}");
+      } else {
+        let port = live_server::start_embedded(tx.clone(), &project);
+        eprintln!("Live visualization at http://127.0.0.1:{port}");
+      }
+    }
+
+    if otel {
+      otel_exporter::start(tx);
+      eprintln!("Exporting OpenTelemetry traces via OTLP");
     }
   }
 
@@ -54,7 +63,7 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
       error.code().unwrap_or(EXIT_FAILURE)
     });
 
-  if live {
+  if live || otel {
     let success = result.is_ok();
     live_event::emit(live_event::LiveEvent::RunCompleted {
       success,
@@ -62,11 +71,11 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
       timestamp_ms: live_event::now_ms(),
     });
 
-    // Give the client/server a moment to deliver the final event
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Give exporters/clients a moment to deliver the final event
+    std::thread::sleep(std::time::Duration::from_millis(if otel { 1000 } else { 500 }));
 
-    // If running with embedded server, keep alive for inspection
-    if std::env::var("JUST_LIVE_URL").is_err() {
+    // If running with embedded server (no remote URL), keep alive for inspection
+    if live && std::env::var("JUST_LIVE_URL").is_err() {
       if success {
         eprintln!("Recipes complete. Visualization server still running. Press Ctrl+C to exit.");
       } else {

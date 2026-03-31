@@ -220,6 +220,12 @@ pub struct Arguments {
   )]
   pub(crate) one: bool,
   #[arg(
+    env = "JUST_OTEL",
+    help = "Export recipe execution as OpenTelemetry traces via OTLP",
+    long
+  )]
+  pub(crate) otel: bool,
+  #[arg(
     conflicts_with = "dry_run",
     env = "JUST_QUIET",
     help = "Suppress all output",
