@@ -27,12 +27,12 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
     live_event::set_sender(tx.clone());
     live_event::set_command_line(std::env::args().collect::<Vec<_>>().join(" "));
 
-    if live {
-      let project = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "unknown".into());
+    let project = std::env::current_dir()
+      .ok()
+      .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+      .unwrap_or_else(|| "unknown".into());
 
+    if live {
       if let Ok(url) = std::env::var("JUST_LIVE_URL") {
         let session_id = uuid::Uuid::new_v4().to_string();
         live_client::start(tx.clone(), &url, &session_id, &project);
@@ -44,8 +44,47 @@ pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<()
     }
 
     if otel {
-      otel_exporter::start(tx);
-      eprintln!("Exporting OpenTelemetry traces via OTLP");
+      // Build service name: <project>/<recipes>@<commit>
+      let git_commit = live_event::git_info(&std::env::current_dir().unwrap_or_default())
+        .1
+        .unwrap_or_default();
+
+      let recipes = config
+        .as_ref()
+        .ok()
+        .and_then(|c| {
+          if let Subcommand::Run { arguments } = &c.subcommand {
+            if arguments.is_empty() {
+              None
+            } else {
+              // Filter out overrides (contain '=')
+              let names: Vec<_> = arguments
+                .iter()
+                .filter(|a| !a.contains('='))
+                .map(String::as_str)
+                .collect();
+              if names.is_empty() {
+                None
+              } else {
+                Some(names.join(","))
+              }
+            }
+          } else {
+            None
+          }
+        })
+        .unwrap_or_else(|| "default".into());
+
+      let commit = if git_commit.is_empty() {
+        "HEAD"
+      } else {
+        &git_commit
+      };
+
+      let service_name = format!("{project}/{recipes}@{commit}");
+
+      otel_exporter::start(tx, &service_name);
+      eprintln!("Exporting OpenTelemetry traces via OTLP (service: {service_name})");
     }
   }
 

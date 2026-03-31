@@ -44,8 +44,16 @@ fn new_span_id() -> SpanId {
   SpanId::from_bytes(rand::random::<[u8; 8]>())
 }
 
-pub(crate) fn start(event_tx: broadcast::Sender<String>) {
+pub(crate) fn start(event_tx: broadcast::Sender<String>, service_name: &str) {
   let mut event_rx = event_tx.subscribe();
+
+  // Set service name for the OTLP exporter (only if not already overridden).
+  if std::env::var("OTEL_SERVICE_NAME").is_err() {
+    // SAFETY: Called early in startup before other threads read this env var.
+    unsafe {
+      std::env::set_var("OTEL_SERVICE_NAME", service_name);
+    }
+  }
 
   let trace_id = TraceId::from_bytes(rand::random::<[u8; 16]>());
   let root_span_id = new_span_id();
@@ -286,6 +294,9 @@ fn handle_event(state: &Arc<Mutex<OtelState>>, event: LiveEvent) {
       s.pending_spans.push(data);
     }
 
+    // All LiveEvent variants are handled above; this arm exists for
+    // forward-compatibility if new variants are added.
+    #[allow(unreachable_patterns)]
     _ => {}
   }
 }
